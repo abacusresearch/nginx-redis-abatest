@@ -20,27 +20,27 @@
 --
 -- access_by_lua_file /etc/nginx/lua/ip_whitelist.lua;
 
-local redis_key                = "hostlist"
-local redis_port               = 6379
-local redis_host               = "127.0.0.1"
+local redis_key = "hostlist"
+local redis_port = 6379
+local redis_host = "127.0.0.1"
 local redis_connection_timeout = 100 -- in ms
-local cache_ttl                = 2 -- in sec
+local cache_ttl = 2 -- in sec
 
-local vm          = string.lower(ngx.var.vm);
-local redis       = require "nginx.redis";
-local hostlist    = ngx.shared.hostlist;
+local vm = string.lower(ngx.var.vm);
+local redis = require "nginx.redis";
+local hostlist = ngx.shared.hostlist;
 local last_update = ngx.shared.last_update.time;
 
 function table.val_to_str ( v )
   if "string" == type( v ) then
     v = string.gsub( v, "\n", "\\n" )
-    if string.match( string.gsub(v,"[^'\"]",""), '^"+$' ) then
+    if string.match( string.gsub(v, "[^'\"]",""), '^" + $' ) then
       return "'" .. v .. "'"
     end
-    return '"' .. string.gsub(v,'"', '\\"' ) .. '"'
+    return '"' .. string.gsub(v, '"', '\\"' ) .. '"'
   else
     return "table" == type( v ) and table.tostring( v ) or
-      tostring( v )
+    tostring( v )
   end
 end
 
@@ -61,7 +61,7 @@ function table.tostring( tbl )
   for k, v in pairs( tbl ) do
     if not done[ k ] then
       table.insert( result,
-        table.key_to_str( k ) .. "=" .. table.val_to_str( v ) )
+      table.key_to_str( k ) .. "=" .. table.val_to_str( v ) )
     end
   end
   return "{" .. table.concat( result, "," ) .. "}"
@@ -76,6 +76,9 @@ function get_hostlist ()
   else
     --ngx.log(ngx.ERR, "Open new Redis connection");
     hostlist, err = red:smembers(redis_key);
+    if ( hostlist == nil ) then
+      ngx.log(ngx.ERR, "hostlist set is empty");
+    end
     -- ngx.log(ngx.ERR, table.tostring(hostlist))
     red:close()
     if not (hostlist == nil) then
@@ -85,16 +88,16 @@ function get_hostlist ()
 end
 
 function contains(list, x)
-	for _, v in pairs(list) do
-		if v == x then return true end
-	end
-	return false
+  for _, v in pairs(list) do
+    if v == x then return true end
+  end
+  return false
 end
 
-if last_update == nil or last_update < ( ngx.now() - cache_ttl ) then
+if ( last_update == nil or last_update < ( ngx.now() - cache_ttl ) ) then
   get_hostlist();
   ngx.shared.last_update.time = ngx.now();
-end 
+end
 
 if not (contains(hostlist, vm)) then
   ngx.log(ngx.ERR, "No external access allowed for: " .. vm);
