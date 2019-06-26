@@ -1,5 +1,25 @@
 -- nginx-redis-lookup
 
+-- a LUA access script for nginx to check if it allowed to access a vm
+-- from the internet
+--
+-- allow a host:
+--   redis-cli SADD hostlist hostname
+-- deny a host:
+--   redis-cli SREM hostlist hostname
+--
+-- requirements:
+--   apt install nginx-extras lua-nginx-redis
+--
+-- add this line to your nginx conf file
+--
+--   lua_shared_dict hostlist 1m;
+--
+-- you can then use the below (adjust path where necessary) to check
+-- match the hostlist in a location, if context:
+--
+-- access_by_lua_file /etc/nginx/lua/ip_whitelist.lua;
+
 local redis_key                = "hostlist"
 local redis_port               = 6379
 local redis_host               = "127.0.0.1"
@@ -52,9 +72,9 @@ function get_hostlist ()
   red:set_timeout(redis_connect_timeout);
   local ok, err = red:connect(redis_host, redis_port);
   if not ok then
-    ngx.log(ngx.DEBUG, "Redis connection error while retrieving data: " .. err);
+    ngx.log(ngx.ERR, "Redis connection error while retrieving data: " .. err);
   else
-    ngx.log(ngx.ERR, "Open new Redis connection");
+    --ngx.log(ngx.ERR, "Open new Redis connection");
     hostlist, err = red:smembers(redis_key);
     -- ngx.log(ngx.ERR, table.tostring(hostlist))
     red:close()
