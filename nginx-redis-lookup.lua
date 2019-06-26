@@ -1,86 +1,82 @@
--- a quick LUA access script for nginx to check IP addresses match an
--- `hostlist` set in Redis, and if no match is found send a HTTP
--- 403 response or just a custom json instead.
---
--- allows for a common whitelist to be shared between a bunch of nginx
--- web servers using a remote redis instance. lookups are cached for a
--- configurable period of time.
---
--- white an ip:
---   redis-cli SADD hostlist 10.1.1.1
--- remove an ip:
---   redis-cli SREM hostlist 10.1.1.1
---
--- requires `lua-nginx-redis`
--- or `lua-resty-redis`, which you need modify the `require "nginx.redis";` 
--- to require "resty.redis";
---
--- To Be Simplified,
--- if use Ubuntu server and nginx, you just need this. `apt install nginx-extras lua-nginx-redis`
--- OR just use https://openresty.org/en/
---
--- add this line to your nginx conf file
---
---   lua_shared_dict hostlist 1m;
---
--- you can then use the below (adjust path where necessary) to check
--- match the whitelist in a http, server, location, if context:
---
--- access_by_lua_file /etc/nginx/lua/hostlist.lua;
---
--- from https://gist.github.com/chrisboulton/6043871
--- modify by Ceelog at https://gist.github.com/Ceelog/39862d297d9c85e743b3b5111b7d44cb
--- lastest modify by itbdw at https://gist.github.com/itbdw/bc6c03f754cc30f66b824f379f3da30f
+-- nginx-redis-lookup
 
--- you should adjust this to you real redis server
-local redis_host       = "127.0.0.1"
-local redis_port       = 6379
+local redis_key                = "hostlist"
+local redis_port               = 6379
+local redis_host               = "127.0.0.1"
+local redis_connection_timeout = 100 -- in ms
+local cache_ttl                = 2 -- in sec
 
--- connection timeout for redis in ms. don't set this too high!
-local redis_connection_timeout = 100
+local vm          = string.lower(ngx.var.vm);
+local redis       = require "nginx.redis";
+local hostlist    = ngx.shared.hostlist;
+local last_update = ngx.shared.last_update.time;
 
--- check a set with this key for whitelist entries
-local redis_key        = "hostlist"
+function table.val_to_str ( v )
+  if "string" == type( v ) then
+    v = string.gsub( v, "\n", "\\n" )
+    if string.match( string.gsub(v,"[^'\"]",""), '^"+$' ) then
+      return "'" .. v .. "'"
+    end
+    return '"' .. string.gsub(v,'"', '\\"' ) .. '"'
+  else
+    return "table" == type( v ) and table.tostring( v ) or
+      tostring( v )
+  end
+end
 
--- cache lookups for this many seconds
-local cache_ttl        = 1
+function table.key_to_str ( k )
+  if "string" == type( k ) and string.match( k, "^[_%a][_%a%d]*$" ) then
+    return k
+  else
+    return "[" .. table.val_to_str( k ) .. "]"
+  end
+end
 
--- end configuration
+function table.tostring( tbl )
+  local result, done = {}, {}
+  for k, v in ipairs( tbl ) do
+    table.insert( result, table.val_to_str( v ) )
+    done[ k ] = true
+  end
+  for k, v in pairs( tbl ) do
+    if not done[ k ] then
+      table.insert( result,
+        table.key_to_str( k ) .. "=" .. table.val_to_str( v ) )
+    end
+  end
+  return "{" .. table.concat( result, "," ) .. "}"
+end
 
-local vm               = ngx.var.vm
-local hostlist    		 = ngx.shared.hostlist
-local last_update_time = hostlist:get("last_update_time");
+function get_hostlist ()
+  local red = redis:new();
+  red:set_timeout(redis_connect_timeout);
+  local ok, err = red:connect(redis_host, redis_port);
+  if not ok then
+    ngx.log(ngx.DEBUG, "Redis connection error while retrieving data: " .. err);
+  else
+    ngx.log(ngx.ERR, "Open new Redis connection");
+    hostlist, err = red:smembers(redis_key);
+    -- ngx.log(ngx.ERR, table.tostring(hostlist))
+    red:close()
+    if not (hostlist == nil) then
+      ngx.shared.hostlist = hostlist;
+    end
+  end
+end
 
--- only update hostlist from Redis once every cache_ttl seconds:
--- if last_update_time == nil or last_update_time < ( ngx.now() - cache_ttl ) then
--- 
---   local redis = require "nginx.redis";
---   local red = redis:new();
--- 
---   red:set_timeout(redis_connect_timeout);
--- 
---   local ok, err = red:connect(redis_host, redis_port);
---   if not ok then
---     ngx.log(ngx.DEBUG, "Redis connection error while retrieving data: " .. err);
---   else
---     local new_hostlist, err = red:smembers(redis_key);
---     if err then
---       ngx.log(ngx.DEBUG, "Redis read error while retrieving data: " .. err);
---     else
---       -- replace the locally stored hostlist with the updated values:
---       hostlist:flush_all();
---       for index, banned_ip in ipairs(new_hostlist) do
---         hostlist:set(banned_ip, true);
---       end
--- 
---       -- update time
---       hostlist:set("last_update_time", ngx.now());
---     end
---   end
--- end
+function contains(list, x)
+	for _, v in pairs(list) do
+		if v == x then return true end
+	end
+	return false
+end
 
+if last_update == nil or last_update < ( ngx.now() - cache_ttl ) then
+  get_hostlist();
+  ngx.shared.last_update.time = ngx.now();
+end 
 
-if not(hostlist:get(vm)) then
-  ngx.log(ngx.DEBUG, "No external access allowed for: " .. vm);
+if not (contains(hostlist, vm)) then
+  ngx.log(ngx.ERR, "No external access allowed for: " .. vm);
   ngx.exit(ngx.HTTP_FORBIDDEN);
 end
